@@ -1,17 +1,16 @@
-import tensorflow as tf
-from align import detect_face
 import cv2
 import numpy as np
-import os, io
-import random
-import datetime
-from threading import Thread
-import time
+import os
 import scipy
-import json
-import requests
-import base64
-from PIL import Image
+import tensorflow as tf
+import time
+from threading import Thread
+
+from align import detect_face
+
+EMB_THRESHOLD = 0.85
+DEFALUT_DISTANCE = 2.0
+PATH_TO_MODEL = '20180402-114759/'
 
 
 def detect_thread():
@@ -23,7 +22,6 @@ def detect_thread():
     # read pnet, rnet, onet models from align directory and files are det1.npy, det2.npy, det3.npy
     pnet, rnet, onet = detect_face.create_mtcnn(sess, 'align')
 
-    PATH_TO_MODEL = '20180402-114759/'
     with tf.Graph().as_default():
         with tf.Session() as recognition_sess:
             # Load the model
@@ -36,7 +34,7 @@ def detect_thread():
 
             count_face = []
             centroid = []
-            while (True):
+            while True:
                 # bounding_boxes = xmin ymin xmax ymax accuracy
                 # copy lastest image from camera
                 image = frame_img
@@ -67,8 +65,6 @@ def detect_thread():
                 feed_dict = {images_placeholder: images, phase_train_placeholder: False}
                 emb = recognition_sess.run(embeddings, feed_dict=feed_dict)
                 total_face_id_min = []
-                EMB_THRESHOLD = 0.85
-                DEFALUT_DISTANCE = 2.0
                 for e in emb:
                     min_distance = DEFALUT_DISTANCE
                     face_id_min = 0
@@ -111,7 +107,7 @@ def capture_thread():
     global frame_img
     # cap from notebook camera
     cap = cv2.VideoCapture(0)
-    while (True):
+    while True:
         # image format should be RGB format, but cap.read() get BGR format
         _, frame_img_tmp = cap.read()
         frame_img = cv2.cvtColor(frame_img_tmp, cv2.COLOR_BGR2RGB)
@@ -159,7 +155,7 @@ def load_model(model, input_map=None):
     # Check if the model is a model directory (containing a metagraph and a checkpoint file)
     #  or if it is a protobuf file with a frozen graph
     model_exp = os.path.expanduser(model)
-    if (os.path.isfile(model_exp)):
+    if os.path.isfile(model_exp):
         print('Model filename: %s' % model_exp)
         with gfile.FastGFile(model_exp, 'rb') as f:
             graph_def = tf.GraphDef()
@@ -174,14 +170,6 @@ def load_model(model, input_map=None):
 
         saver = tf.train.import_meta_graph(os.path.join(model_exp, meta_file), input_map=input_map)
         saver.restore(tf.get_default_session(), os.path.join(model_exp, ckpt_file))
-
-
-def toBase64(img):
-    img = Image.fromarray(img, 'RGB')
-    imgByteArr = io.BytesIO()
-    img.save(imgByteArr, format='JPEG')
-    imgByteArr = imgByteArr.getvalue()
-    return str(base64.b64encode(imgByteArr))
 
 
 if __name__ == '__main__':
