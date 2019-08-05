@@ -1,16 +1,22 @@
-import cv2
-import numpy as np
+import base64
+import datetime
+import io
+import json
 import os
-import scipy
-import tensorflow as tf
 import time
 from threading import Thread
 
+import cv2
+import numpy as np
+import requests
+import tensorflow as tf
+from PIL import Image
+from scipy import misc
+
 from align import detect_face
 
-EMB_THRESHOLD = 0.85
-DEFALUT_DISTANCE = 2.0
-PATH_TO_MODEL = '20180402-114759/'
+PATH_TO_MODEL = 'MODEL_FACE_NET/'
+URI = 'https://face-detect-229308.appspot.com/add_camera_logs'
 
 
 def detect_thread():
@@ -32,71 +38,53 @@ def detect_thread():
             embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
             phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
 
-            count_face = []
-            centroid = []
             while True:
-                # bounding_boxes = xmin ymin xmax ymax accuracy
-                # copy lastest image from camera
                 image = frame_img
-                bounding_boxes, _ = detect_face.detect_face(image, minsize, pnet, rnet, onet, threshold,
-                                                            factor)
-
-                img_list = []
-                image_size = 160
+                time_of_frame = datetime.datetime.now()
+                # bounding_boxes = xmin ymin xmax ymax accuracy
+                bounding_boxes, _ = detect_face.detect_face(image, minsize, pnet, rnet, onet, threshold, factor)
 
                 if len(bounding_boxes) == 0:
                     continue
 
+                img_list = []
+                image_size = 160
+
+                img_base_64 = []
                 for box in bounding_boxes:
                     xmin, ymin, xmax, ymax, _ = box
 
                     cropped = crop_img(image, xmin, ymin, xmax, ymax)
-                    aligned = cv2.resize(cropped, (image_size, image_size))
-
+                    aligned = misc.imresize(cropped, (image_size, image_size))
                     prewhitened = prewhiten(aligned)
                     img_list.append(prewhitened)
+
+                    img_base_64.append("data:image/png;base64," + to_base_64(cropped)[2:-1])
+                    cv2.rectangle(image, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])),
+                                  (0, 0, 255), 1)
 
                 images = np.stack(img_list)
                 # Run forward pass to calculate embeddings
                 feed_dict = {images_placeholder: images, phase_train_placeholder: False}
                 emb = recognition_sess.run(embeddings, feed_dict=feed_dict)
-                total_face_id_min = []
-                for e in emb:
-                    min_distance = DEFALUT_DISTANCE
-                    face_id_min = 0
-                    idx = 0
-                    for c in centroid:
-                        distance_compared = scipy.spatial.distance.euclidean(e, c)
-                        if distance_compared < min_distance:
-                            min_distance = distance_compared
-                            face_id_min = idx
-                        idx += 1
-                    # add new face id
-                    if min_distance >= EMB_THRESHOLD:
-                        count_face.append(1)
-                        centroid.append(e)
-                        face_id_min = idx
-                    else:
-                        count_face[face_id_min] += 1
-                        centroid[face_id_min] = (count_face[face_id_min] * centroid[face_id_min] + e) / (
-                                count_face[face_id_min] + 1)
-                    total_face_id_min.append(face_id_min)
 
+                # send emb to google cloud
+                logs = []
                 for idx in range(len(emb)):
-                    xmin, ymin, xmax, ymax, face_acc = bounding_boxes[idx]
-
-                    cv2.rectangle(image, (int(xmin), int(ymin)), (int(xmax), int(ymax)), (255, 0, 0), 2)
-                    face_id_text = str(total_face_id_min[idx]) + ' ' + str(face_acc)
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    cv2.putText(image, face_id_text, (int(xmax), int(ymin)), font, 2, (0, 0, 255), 2)
-
-                for i in emb:
-                    j = centroid[0]
-                    print("{:^8.4f}".format(scipy.spatial.distance.euclidean(i, j)), end="")
-                    print()
-                cv2.imshow('img', cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    out = cv2.imwrite('capture.jpg', image)
+                    logs.append(
+                        {
+                            "camera_id": "CCTV01",
+                            "face_vector": str(emb[idx].tolist()),
+                            "time_detect": str(time_of_frame),
+                            "face_image": img_base_64[idx]
+                        })
+                data = {
+                    "logs": logs,
+                    "full_image": "data:image/png;base64," + to_base_64(image)[2:-1]
+                }
+                data_json = json.dumps(data)
+                headers = {'Content-type': 'application/json'}
+                response = requests.post(URI, data=data_json, headers=headers)
 
 
 def capture_thread():
@@ -152,8 +140,8 @@ def get_model_filenames(model_dir):
 
 
 def load_model(model, input_map=None):
-    # Check if the model is local_embedding_send_to_cloud.py model directory (containing local_embedding_send_to_cloud.py metagraph and local_embedding_send_to_cloud.py checkpoint file)
-    #  or if it is local_embedding_send_to_cloud.py protobuf file with local_embedding_send_to_cloud.py frozen graph
+    # Check if the model is a model directory (containing a metagraph and a checkpoint file)
+    #  or if it is a protobuf file with a frozen graph
     model_exp = os.path.expanduser(model)
     if os.path.isfile(model_exp):
         print('Model filename: %s' % model_exp)
@@ -170,6 +158,14 @@ def load_model(model, input_map=None):
 
         saver = tf.train.import_meta_graph(os.path.join(model_exp, meta_file), input_map=input_map)
         saver.restore(tf.get_default_session(), os.path.join(model_exp, ckpt_file))
+
+
+def to_base_64(img):
+    img = Image.fromarray(img, 'RGB')
+    img_byte_arr = io.BytesIO()
+    img.save(img_byte_arr, format='JPEG')
+    img_byte_arr = img_byte_arr.getvalue()
+    return str(base64.b64encode(img_byte_arr))
 
 
 if __name__ == '__main__':
