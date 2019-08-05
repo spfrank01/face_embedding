@@ -10,7 +10,7 @@ from align import detect_face
 
 EMB_THRESHOLD = 0.85
 DEFALUT_DISTANCE = 2.0
-PATH_TO_MODEL = '20180402-114759/'
+PATH_TO_MODEL = 'MODEL_FACE_NET/'
 
 
 def detect_thread():
